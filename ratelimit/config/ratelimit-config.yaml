@@ -1,0 +1,21 @@
+---
+domain: rl
+descriptors:
+  - key: from
+    value: partner1
+    rate_limit:
+      unit: minute
+      requests_per_unit: 3
+  - key: from
+    value: partner2
+    rate_limit:
+      unit: second
+      requests_per_unit: 2  
+  - key: template
+    value: partner3
+    rate_limit:
+      unlimited: true
+  - key: template
+    rate_limit:
+      unit: minute
+      requests_per_unit: 2

@@ -1,0 +1,9 @@
+FROM envoyproxy/envoy:v1.18.3
+
+COPY ./front-envoy.yaml /etc/envoy.yaml
+COPY ./token-secret.yaml /etc/envoy/token-secret.yaml
+COPY ./hmac-secret.yaml /etc/envoy/hmac-secret.yaml
+RUN chmod go+r /etc/envoy.yaml
+RUN chmod go+r /etc/envoy/token-secret.yaml
+RUN chmod go+r /etc/envoy/hmac-secret.yaml
+CMD ["/usr/local/bin/envoy", "-c /etc/envoy.yaml", "-l", "debug", "--service-cluster service-a", "--service-node service-a"]

@@ -1,0 +1,254 @@
+admin:
+  address:
+    socket_address: { address: 0.0.0.0, port_value: 8001 }
+
+static_resources:
+  listeners:
+  - name: listener_0
+    address:
+      socket_address: { address: 0.0.0.0, port_value: 9090 }
+    filter_chains:
+    - filters:
+#      - name: envoy.filters.network.rbac #Network level RBAC based on IPs, Ports and SSL Subject
+#        config:
+#          stat_prefix: rbac_postgres
+#          rules:
+#            action: ALLOW
+#            policies:
+#              "allow":
+#                permissions:
+#                  - any: true
+#                principals:
+#                  - remote_ip:
+#                      address_prefix: XX.XX.XX.XX
+#                      prefix_len: 32
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          codec_type: AUTO
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: local_service
+              domains: ["*"]
+              routes:
+              - name: test
+                match: 
+#                  prefix: "/api/test/"
+                  prefix: "/test/"
+                route: 
+#                  prefix_rewrite: "/test/" 
+                  cluster: svc-greeting
+                  rate_limits:
+                    - actions:
+                        - request_headers:
+                            header_name: "from"
+                            descriptor_key: "from"
+                  upgrade_configs:
+                  - upgrade_type: CONNECT
+              - name: template 
+                match: 
+                  prefix: "/template/"
+                route: 
+#                  prefix_rewrite: "/template/"
+                  cluster: svc-template
+                  rate_limits:
+                    - actions:
+                        - request_headers:
+                            header_name: "from"
+                            descriptor_key: "template"
+                  upgrade_configs:
+                  - upgrade_type: CONNECT   
+              - match: 
+                  prefix: "/actuator/"
+                route: 
+                  cluster: svc-template
+                  upgrade_configs:
+                  - upgrade_type: CONNECT    
+          http_filters:
+          - name: envoy.filters.http.oauth2
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.oauth2.v3alpha.OAuth2
+              config:
+                token_endpoint:
+                  cluster: keycloak-instance
+                  uri: http://localhost:8080/auth/realms/xls/protocol/openid-connect/token
+                  timeout: 5s
+                authorization_endpoint: http://localhost:8080/auth/realms/xls/protocol/openid-connect/auth
+                redirect_uri: "http://%REQ(:authority)%/callback"
+                redirect_path_matcher:
+                  path:
+                    exact: /callback
+                signout_path:
+                  path:
+                    exact: /signout
+                forward_bearer_token: true    
+                credentials:
+                  client_id: "test"
+                  token_secret:
+                    name: token
+                    sds_config:
+                      path: "/etc/envoy/token-secret.yaml"
+                  hmac_secret:
+                    name: hmac
+                    sds_config:
+                      path: "/etc/envoy/hmac-secret.yaml"
+                auth_scopes:
+#                  - openid
+#                  - profile
+                  - email
+                  - test-read
+                  - test-create
+#                  - roles
+          - name: envoy.filters.http.jwt_authn
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+              providers:
+                oidc_provider:
+                  issuer: http://localhost:8080/auth/realms/xls
+                  audiences:
+                    - test-api
+                  forward: true
+                  from_headers:
+                    - name: Authorization
+                      value_prefix: "Bearer "
+                  payload_in_metadata: jwt_payload
+                  forward_payload_header: x-jwt-payload
+                  remote_jwks:
+                    http_uri:
+                      uri: http://localhost:8080/auth/realms/xls/protocol/openid-connect/certs
+                      cluster: keycloak
+                      timeout: 5s
+                    cache_duration: 
+                      seconds: 300  
+              rules:
+                - match:
+                    prefix: /template
+                - match:
+                    prefix: /actuator
+                - match:
+                    prefix: /test
+                  requires:
+                    requires_any:
+                      requirements:
+                        - provider_name: oidc_provider
+                        - allow_missing_or_failed: {}        
+#          - name: envoy.filters.http.lua
+#            typed_config:
+#              "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+#              inline_code: |
+#                function envoy_on_request(request_handle)
+#                  local payload = request_handle:streamInfo():dynamicMetadata():get("envoy.filters.http.jwt_authn")["jwt_payload"]
+#                  request_handle:headers():add("jwt-extracted-sub", payload.sub)
+#                  request_handle:headers():add("from", payload.clientId)
+#                end
+#                function envoy_on_response(response_handle)
+#                end              
+          - name: envoy.filters.http.ratelimit
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+              domain: rl
+              request_type: external
+              stage: 0
+              rate_limited_as_resource_exhausted: true
+              failure_mode_deny: false
+              enable_x_ratelimit_headers: DRAFT_VERSION_03
+              rate_limit_service:
+                grpc_service:
+                  envoy_grpc:
+                    cluster_name: ratelimit
+                transport_api_version: V3
+          - name: envoy.ext_authz
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+              failure_mode_allow: false
+              grpc_service:
+                envoy_grpc:
+                  cluster_name: opa-envoy
+#                google_grpc:
+#                  target_uri: opa:9191
+#                  target_uri: opa:8002
+#                  stat_prefix: ext_authz
+                timeout: 0.5s
+              transport_api_version: v3
+          - name: envoy.filters.http.cors
+          - name: envoy.filters.http.router
+            typed_config: {} 
+          http2_protocol_options:
+            allow_connect: true
+          upgrade_configs:
+          - upgrade_type: CONNECT
+  clusters:
+  - name: keycloak-instance
+    connect_timeout: 0.25s
+    type: strict_dns
+    lb_policy: round_robin
+    load_assignment:
+      cluster_name: keycloak-instance
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: keycloak
+                port_value: 8080
+  - name: svc-greeting
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: round_robin
+    load_assignment:
+      cluster_name: service1
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: greeting
+                port_value: 9091
+  - name: svc-template
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: round_robin
+    load_assignment:
+      cluster_name: service2
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: template
+                port_value: 9092
+  - name: opa-envoy
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: round_robin
+    http2_protocol_options: {}
+    load_assignment:
+      cluster_name: opa-envoy
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: opa
+                port_value: 9191
+  - name: ratelimit
+    type: STRICT_DNS
+    connect_timeout: 1s
+    lb_policy: ROUND_ROBIN
+    protocol_selection: USE_CONFIGURED_PROTOCOL
+    http2_protocol_options: {}
+    load_assignment:
+      cluster_name: ratelimit
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: ratelimit
+                port_value: 8081

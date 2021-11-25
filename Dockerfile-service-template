@@ -1,0 +1,5 @@
+FROM adoptopenjdk/openjdk14
+ENV APP_HOME=/usr/app
+WORKDIR $APP_HOME
+COPY ./service-template-0.0.1-SNAPSHOT.jar app.jar
+CMD ["java", "-jar", "app.jar"]

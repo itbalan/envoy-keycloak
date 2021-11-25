@@ -1,0 +1,143 @@
+version: "3.7"
+services:
+  keycloak.data:
+      image: postgres:alpine
+      volumes:
+        - postgres_data:/var/lib/postgresql/data
+      environment:
+        POSTGRES_DB: keycloak
+        POSTGRES_USER: keycloak
+        POSTGRES_PASSWORD: password
+      networks:
+        - ratelimit-network  
+
+  keycloak:
+      image: quay.io/keycloak/keycloak:latest
+      environment:
+        DB_VENDOR: POSTGRES
+        DB_ADDR: keycloak.data
+        DB_DATABASE: keycloak
+        DB_USER: keycloak
+        DB_SCHEMA: public
+        DB_PASSWORD: password
+        KEYCLOAK_USER: admin 
+        KEYCLOAK_PASSWORD: admin
+      ports:
+        - 8083:8083
+      networks:
+        - ratelimit-network  
+      depends_on:
+        - keycloak.data
+        
+  redis:
+    image: redis:alpine 
+    expose:
+      - 6379
+    ports:
+      - 6379:6379
+    networks:
+      - ratelimit-network
+
+  statsd:
+    image: prom/statsd-exporter:v0.18.0
+    entrypoint: /bin/statsd_exporter
+    command:
+      - "--statsd.mapping-config=/etc/statsd-exporter/conf.yaml"
+    expose:
+      - 9125
+      - 9102
+    ports:
+      - 9125:9125
+      - 9102:9102 # Visit http://localhost:9102/metrics to see metrics in Prometheus format
+    networks:
+      - ratelimit-network
+    volumes:
+      - ./prom-statsd-exporter/conf.yaml:/etc/statsd-exporter/conf.yaml
+
+  ratelimit:
+    image: envoyproxy/ratelimit:master
+    command: /bin/ratelimit
+    ports:
+      - 8080:8080
+      - 8081:8081
+      - 6070:6070
+    depends_on:
+      - redis
+      - statsd
+    networks:
+      - ratelimit-network
+    volumes:
+      - ./ratelimit/config:/data/ratelimit/config
+    environment:
+      - USE_STATSD=true
+      - STATSD_HOST=statsd
+      - STATSD_PORT=9125
+      - LOG_LEVEL=debug
+      - REDIS_SOCKET_TYPE=tcp
+      - REDIS_URL=redis:6379
+      - RUNTIME_ROOT=/data
+      - RUNTIME_SUBDIRECTORY=ratelimit
+      - RUNTIME_WATCH_ROOT=false
+
+  front-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile-frontenvoy
+    networks:
+      - ratelimit-network
+    ports:
+    - "8082:8082"
+    - "8001:8001"
+
+  opa:
+    image: openpolicyagent/opa:latest-envoy
+    volumes:
+      - ./policy.rego:/config/policy.rego
+    command:
+      - "run"
+      - "--log-level=debug"
+      - "--log-format=json-pretty"
+      - "--server"
+      - "--set=plugins.envoy_ext_authz_grpc.path=envoy/authz/allow"  # default value
+#      - "--set=plugin.envoy_ext_authz_grpc.addr=:8002"
+      - "--set=decision_logs.console=true"
+      - "/config/policy.rego"
+    networks:
+      - ratelimit-network
+      
+  greeting:
+    build:
+      context: .
+      dockerfile: Dockerfile-service-template-greeting
+    networks:
+      - ratelimit-network
+    expose:
+      - "9091"
+    ports:
+      - "9091:9091"
+
+  template:
+    build:
+      context: .
+      dockerfile: Dockerfile-service-template
+    networks:
+      - ratelimit-network
+    expose:
+      - "9092"
+#      - "9093"  
+    ports:
+      - "9092:9092"
+#      - "9093:9093"  
+#  test:
+#    image: test:v1.0.0
+   
+#  template:
+#    image: template:v1  
+
+volumes:
+  postgres_data:
+    driver: local
+ 
+networks:
+  ratelimit-network:
+#    name: edge
